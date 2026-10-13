@@ -122,7 +122,7 @@ CREATE TYPE vswir_plants."SUBPLOT_cover_method" AS ENUM (
     'line-intercept-transect',
     'quadrat',
     'visual assessment',
-    'N/A'
+    'N/A',
     'not recorded'
 );
 
