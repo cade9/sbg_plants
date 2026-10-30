@@ -57,8 +57,8 @@ CREATE TABLE vswir_plants_staging.doi (
     CONSTRAINT staging_doi_campaign_fkey FOREIGN KEY (campaign_name, batch_id)
         REFERENCES vswir_plants_staging.campaign(campaign_name, batch_id)
         ON DELETE CASCADE,
-    CONSTRAINT staging_doi_not_applicable_chk CHECK (
-        doi <> 'not applicable' OR role IN ('plot_method', 'trait_method', 'campaign_overview', 'pixel_shade_mask')),
+    CONSTRAINT staging_doi_format_chk CHECK (
+        doi ~ '^10\.[0-9]{4,9}/\S+$'),
     CONSTRAINT staging_doi_scope_chk CHECK (
         CASE
             WHEN role IN ('radiance_dataset', 'pixel_shade_mask') THEN plot_method IS NULL AND trait_method IS NULL AND trait IS NULL

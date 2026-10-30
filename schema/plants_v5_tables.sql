@@ -9,7 +9,6 @@ CREATE TABLE vswir_plants.campaign (
 -- one row per doi, role says what part of the database it relates to
 -- same doi can have several rows, several dois can share a role
 -- citation_text is only for a doi that cannot be looked up online*
--- doi = 'not applicable' states a protocol has no doi - not required though*
 -- plot_method null on a plot_method row = protocol covers every plot method
 CREATE TABLE vswir_plants.doi (
     doi_id SERIAL PRIMARY KEY,
@@ -25,11 +24,7 @@ CREATE TABLE vswir_plants.doi (
         REFERENCES vswir_plants.campaign(campaign_name)
         ON DELETE CASCADE,
     CONSTRAINT doi_format_chk CHECK (
-        doi = 'not applicable' OR (doi ~ '^10\.[0-9]{4,9}/\S+$')),
-    CONSTRAINT doi_citation_chk CHECK (
-        citation_text IS DISTINCT FROM 'not applicable' AND (doi <> 'not applicable' OR citation_text IS NULL)),
-    CONSTRAINT doi_not_applicable_chk CHECK (
-        doi <> 'not applicable' OR role IN ('plot_method', 'trait_method', 'campaign_overview', 'pixel_shade_mask')),
+        doi ~ '^10\.[0-9]{4,9}/\S+$'),
     CONSTRAINT doi_scope_chk CHECK (
         CASE
             WHEN role IN ('radiance_dataset', 'pixel_shade_mask') THEN plot_method IS NULL AND trait_method IS NULL AND trait IS NULL
@@ -50,8 +45,6 @@ CREATE TABLE vswir_plants.doi (
 -- no duplicate rows, null scopes and doi case are treated as equal
 CREATE UNIQUE INDEX doi_unique ON vswir_plants.doi
     (campaign_name, lower(doi), role, sensor_name, plot_method, trait_method, trait) NULLS NOT DISTINCT;
-
-CREATE INDEX doi_campaign_role_idx ON vswir_plants.doi (campaign_name, role);
 
 CREATE TABLE vswir_plants.sensor_campaign (
     campaign_name vswir_plants."CAMPAIGN_name" NOT NULL,
