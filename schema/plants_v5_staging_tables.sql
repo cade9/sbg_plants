@@ -42,17 +42,42 @@ CREATE TABLE vswir_plants_staging.campaign (
 
 -- ── doi ───────────────────────────────────────────────────────────────────────
 
+-- same rules as vswir_plants.doi
+
 CREATE TABLE vswir_plants_staging.doi (
-    doi           VARCHAR NOT NULL,
-    campaign_name VARCHAR NOT NULL,
-    doi_type      VARCHAR,
-    doi_subtype   VARCHAR,
-    batch_id      VARCHAR NOT NULL,
-    CONSTRAINT staging_doi_pk PRIMARY KEY (doi, batch_id),
+    campaign_name VARCHAR                       NOT NULL,
+    doi           VARCHAR                       NOT NULL,
+    citation_text VARCHAR,
+    role          vswir_plants."DOI_role"       NOT NULL,
+    sensor_name   vswir_plants."Sensor_name",
+    plot_method   vswir_plants."PLOT_method",
+    trait_method  vswir_plants."Trait_method",
+    trait         vswir_plants."Trait",
+    batch_id      VARCHAR                       NOT NULL,
     CONSTRAINT staging_doi_campaign_fkey FOREIGN KEY (campaign_name, batch_id)
         REFERENCES vswir_plants_staging.campaign(campaign_name, batch_id)
-        ON DELETE CASCADE
+        ON DELETE CASCADE,
+    CONSTRAINT staging_doi_format_chk CHECK (
+        doi ~ '^10\.[0-9]{4,9}/\S+$'),
+    CONSTRAINT staging_doi_scope_chk CHECK (
+        CASE
+            WHEN role IN ('radiance_dataset', 'pixel_shade_mask') THEN plot_method IS NULL AND trait_method IS NULL AND trait IS NULL
+            WHEN role = 'plot_method'      THEN sensor_name IS NULL
+                                         AND trait_method IS NULL AND trait IS NULL
+            WHEN role = 'trait_method'     THEN trait_method IS NOT NULL AND trait IS NOT NULL
+                                         AND sensor_name IS NULL
+                                         AND plot_method IS NULL
+            WHEN role = 'trait_data'       THEN trait IS NOT NULL
+                                         AND sensor_name IS NULL
+                                         AND plot_method IS NULL
+            ELSE sensor_name IS NULL
+                 AND plot_method IS NULL AND trait_method IS NULL AND trait IS NULL
+        END
+    )
 );
+
+CREATE UNIQUE INDEX staging_doi_unique ON vswir_plants_staging.doi
+    (campaign_name, lower(doi), role, sensor_name, plot_method, trait_method, trait, batch_id) NULLS NOT DISTINCT;
 
 -- ── sensor_campaign ───────────────────────────────────────────────────────────
 
@@ -257,8 +282,7 @@ CREATE TABLE vswir_plants_staging.sample (
 -- FIX: prod moved from a composite PK to a trait_id SERIAL surrogate key,
 -- because the same trait for the same sample can now have multiple methods
 -- (the old composite key can no longer guarantee uniqueness). Staging still
--- had the old composite-key approach. Also added the missing `doi` column
--- and its FK, matching prod's link from a trait row to its source DOI.
+-- had the old composite-key approach.
 
 CREATE TABLE vswir_plants_staging.leaf_traits (
     trait_id        SERIAL,
@@ -272,14 +296,10 @@ CREATE TABLE vswir_plants_staging.leaf_traits (
     units           vswir_plants."Trait_units"     NOT NULL,
     error           FLOAT4,
     error_type      vswir_plants."Error_type",
-    doi             VARCHAR,
     batch_id        VARCHAR                        NOT NULL,
     CONSTRAINT staging_leaf_traits_pk PRIMARY KEY (trait_id, batch_id),
     CONSTRAINT staging_leaf_traits_sample_fkey FOREIGN KEY (plot_id, collection_date, sample_name, batch_id)
         REFERENCES vswir_plants_staging.sample(plot_id, collection_date, sample_name, batch_id)
-        ON DELETE CASCADE,
-    CONSTRAINT staging_leaf_traits_doi_fkey FOREIGN KEY (doi, batch_id)
-        REFERENCES vswir_plants_staging.doi(doi, batch_id)
         ON DELETE CASCADE
 );
 

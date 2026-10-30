@@ -134,6 +134,19 @@ CREATE TYPE vswir_plants."PLOT_method" AS ENUM (
 );
 
 
+-- what a doi is cited for, each campaign needs at least one doi for radiance (radiance_dataset),
+-- sample (plot_information, plot_method, trait_method or trait_data) and geospatial (plot_shapes), checked in qaqc
+CREATE TYPE vswir_plants."DOI_role" AS ENUM (
+    'campaign_overview',
+    'radiance_dataset',
+    'pixel_shade_mask',
+    'plot_method',
+    'plot_information',
+    'plot_shapes',
+    'trait_method',
+    'trait_data'
+);
+
 CREATE TYPE vswir_plants."Repository" AS ENUM (
     'ORNL DAAC',
     'NEON',

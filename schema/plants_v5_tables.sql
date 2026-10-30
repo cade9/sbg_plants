@@ -6,19 +6,45 @@ CREATE TABLE vswir_plants.campaign (
     taxa_system VARCHAR
 );
 
--- doi table, neon dois change on a yearly basis
--- one campaign many dois
--- what level do we integrate dois, campaign, trait etc
+-- one row per doi, role says what part of the database it relates to
+-- same doi can have several rows, several dois can share a role
+-- citation_text is only for a doi that cannot be looked up online*
+-- plot_method null on a plot_method row = protocol covers every plot method
 CREATE TABLE vswir_plants.doi (
-    doi VARCHAR NOT NULL,
-    campaign_name vswir_plants."CAMPAIGN_name" NOT NULL,
-    doi_type VARCHAR,
-    doi_subtype VARCHAR,
-    CONSTRAINT doi_campaign_key FOREIGN KEY (campaign_name)
+    doi_id SERIAL PRIMARY KEY,
+    campaign_name   vswir_plants."CAMPAIGN_name" NOT NULL,
+    doi             VARCHAR NOT NULL,
+    citation_text   VARCHAR,
+    role            vswir_plants."DOI_role" NOT NULL,
+    sensor_name     vswir_plants."Sensor_name",
+    plot_method     vswir_plants."PLOT_method",
+    trait_method    vswir_plants."Trait_method",
+    trait           vswir_plants."Trait",
+    CONSTRAINT doi_campaign_fkey FOREIGN KEY (campaign_name)
         REFERENCES vswir_plants.campaign(campaign_name)
         ON DELETE CASCADE,
-    CONSTRAINT doi_pk PRIMARY KEY (doi)
+    CONSTRAINT doi_format_chk CHECK (
+        doi ~ '^10\.[0-9]{4,9}/\S+$'),
+    CONSTRAINT doi_scope_chk CHECK (
+        CASE
+            WHEN role IN ('radiance_dataset', 'pixel_shade_mask') THEN plot_method IS NULL AND trait_method IS NULL AND trait IS NULL
+            WHEN role = 'plot_method'      THEN sensor_name IS NULL
+                                         AND trait_method IS NULL AND trait IS NULL
+            WHEN role = 'trait_method'     THEN trait_method IS NOT NULL AND trait IS NOT NULL
+                                         AND sensor_name IS NULL
+                                         AND plot_method IS NULL
+            WHEN role = 'trait_data'       THEN trait IS NOT NULL
+                                         AND sensor_name IS NULL
+                                         AND plot_method IS NULL
+            ELSE sensor_name IS NULL
+                 AND plot_method IS NULL AND trait_method IS NULL AND trait IS NULL
+        END
+    )
 );
+
+-- no duplicate rows, null scopes and doi case are treated as equal
+CREATE UNIQUE INDEX doi_unique ON vswir_plants.doi
+    (campaign_name, lower(doi), role, sensor_name, plot_method, trait_method, trait) NULLS NOT DISTINCT;
 
 CREATE TABLE vswir_plants.sensor_campaign (
     campaign_name vswir_plants."CAMPAIGN_name" NOT NULL,
@@ -199,12 +225,8 @@ CREATE TABLE vswir_plants.leaf_traits (
     units vswir_plants."Trait_units" NOT NULL,
     error FLOAT4,
     error_type vswir_plants."Error_type",
-    doi VARCHAR, 
     CONSTRAINT sample_table_fkey FOREIGN KEY (plot_id, collection_date, sample_name)
         REFERENCES vswir_plants.sample (plot_id, collection_date, sample_name)
-        ON DELETE CASCADE,
-    CONSTRAINT leaf_trait_protocol_key FOREIGN KEY (doi)
-        REFERENCES vswir_plants.doi (doi)
         ON DELETE CASCADE,
     CONSTRAINT leaf_trait_pk PRIMARY KEY (trait_id)
     -- CONSTRAINT leaf_trait_pk PRIMARY KEY (plot_id, collection_date, sample_name, trait)
@@ -222,13 +244,3 @@ UNIQUE (
     units
 );
 
--- move things from traits to trait protocols?
--- make a seperate table for trait methods which have protocols, this could be linked to the doi table??
--- link back to the trait table
--- CREATE TABLE vswir_plants.leaf_trait_protocols (
---     doi VARCHAR,
---     CONSTRAINT leaf_trait_protocol_doi_key FOREIGN KEY (doi)
---         REFERENCES vswir_plants.doi(doi)
---         ON DELETE CASCADE,
---     CONSTRAINT sensor_campaign_pk PRIMARY KEY(doi)
--- );
