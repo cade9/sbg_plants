@@ -153,19 +153,71 @@ def _count_traits(plot_ids, trait_filters, schema: str):
     return int(df["n"].iloc[0])
 
 
-def _count_granules(plot_ids, granule_filters, schema: str):
+def _count_granules_and_pixels(plot_ids, granule_filters, schema: str):
+    """Return (total_granules, total_pixels) in a single query.
+
+    total_pixels is COUNT(*) of the same granule/pixel join used elsewhere —
+    i.e. the same number the frontend used to compute client-side by summing
+    len(pixel_ids) across every granule in an unpaginated fetch-all response.
+    Computing it here avoids ever transferring the raw pixel_id arrays for
+    that purpose.
+    """
     cte_sql, pixel_fragment, params = _granule_cte_and_where(granule_filters, plot_ids, schema)
     sql = f"""
         {cte_sql}
-        SELECT COUNT(DISTINCT fg.granule_id) AS n
+        SELECT COUNT(DISTINCT fg.granule_id) AS n_granules, COUNT(*) AS n_pixels
         FROM filtered_granules fg
         JOIN "{schema}".pixel px ON px.granule_id = fg.granule_id
         WHERE {pixel_fragment}
     """
-    logger.debug("Count granules SQL: %s", sql)
+    logger.debug("Count granules/pixels SQL: %s", sql)
     with get_connection() as conn:
         df = pd.read_sql(sql, conn, params=params)
-    return int(df["n"].iloc[0])
+    return int(df["n_granules"].iloc[0]), int(df["n_pixels"].iloc[0])
+
+
+def _trait_counts_by_plot(plot_ids, trait_filters, schema: str):
+    """Return {plot_id: trait_row_count} for every plot with at least one matching trait row."""
+    where_clause, where_params = _trait_where(trait_filters, plot_ids)
+    sql = f'SELECT plot_id, COUNT(*) AS n FROM "{schema}".trait_view{where_clause} GROUP BY plot_id'
+    logger.debug("Trait counts by plot SQL: %s", sql)
+    with get_connection() as conn:
+        df = pd.read_sql(sql, conn, params=list(where_params))
+    return dict(zip(df["plot_id"], df["n"]))
+
+
+def _granule_counts_by_plot(plot_ids, granule_filters, schema: str):
+    """Return {plot_id: distinct_granule_count} for every plot with at least one matching granule."""
+    cte_sql, pixel_fragment, params = _granule_cte_and_where(granule_filters, plot_ids, schema)
+    sql = f"""
+        {cte_sql}
+        SELECT px.plot_id, COUNT(DISTINCT fg.granule_id) AS n
+        FROM filtered_granules fg
+        JOIN "{schema}".pixel px ON px.granule_id = fg.granule_id
+        WHERE {pixel_fragment}
+        GROUP BY px.plot_id
+    """
+    logger.debug("Granule counts by plot SQL: %s", sql)
+    with get_connection() as conn:
+        df = pd.read_sql(sql, conn, params=params)
+    return dict(zip(df["plot_id"], df["n"]))
+
+
+def _total_csv_rows(plot_ids, trait_filters, granule_filters, schema: str):
+    """One row per trait measurement, joined against every overlapping granule
+    (min 1 row per trait, matching the CSV export logic in the frontend) —
+    computed as small per-plot aggregates instead of materializing full rows.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        tf = pool.submit(_trait_counts_by_plot,   plot_ids, trait_filters,   schema)
+        gf = pool.submit(_granule_counts_by_plot, plot_ids, granule_filters, schema)
+        trait_counts   = tf.result()
+        granule_counts = gf.result()
+
+    return sum(
+        n_traits * max(1, granule_counts.get(plot_id, 0))
+        for plot_id, n_traits in trait_counts.items()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -346,21 +398,26 @@ def run_linked_query(body: dict, schema: str = "vswir_plants") -> dict:
 
     if not all_plot_ids:
         return {
-            "total_plots":    0,
-            "total_traits":   0,
-            "total_granules": 0,
-            "truncated":      False,
-            "plots":          [],
-            "traits":         [],
-            "granules":       [],
+            "total_plots":       0,
+            "total_traits":      0,
+            "total_granules":    0,
+            "total_pixel_count": 0,
+            "total_csv_rows":    0,
+            "truncated":         False,
+            "plots":             [],
+            "traits":            [],
+            "granules":          [],
         }
 
-    # Stage 2 — parallel COUNT queries
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        trait_count_future   = pool.submit(_count_traits,   all_plot_ids, trait_filters,   schema)
-        granule_count_future = pool.submit(_count_granules, all_plot_ids, granule_filters, schema)
+    # Stage 2 — parallel COUNT queries (traits, granules+pixels, csv row total).
+    # None of these transfer raw rows/arrays — only small aggregate results.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        trait_count_future    = pool.submit(_count_traits, all_plot_ids, trait_filters, schema)
+        granule_pixel_future  = pool.submit(_count_granules_and_pixels, all_plot_ids, granule_filters, schema)
+        csv_rows_future       = pool.submit(_total_csv_rows, all_plot_ids, trait_filters, granule_filters, schema)
         total_traits   = trait_count_future.result()
-        total_granules = granule_count_future.result()
+        total_granules, total_pixel_count = granule_pixel_future.result()
+        total_csv_rows = csv_rows_future.result()
 
     # Stage 3 — paginate
     truncated     = total_plots > (offset + limit)
@@ -376,17 +433,19 @@ def run_linked_query(body: dict, schema: str = "vswir_plants") -> dict:
         page_granules = granules_future.result()
 
     logger.debug(
-        "Linked query (%s): %d plots total (%d traits, %d granules), page %d-%d",
-        schema, total_plots, total_traits, total_granules, offset, offset + limit,
+        "Linked query (%s): %d plots total (%d traits, %d granules, %d pixels, %d csv rows), page %d-%d",
+        schema, total_plots, total_traits, total_granules, total_pixel_count, total_csv_rows, offset, offset + limit,
     )
 
     response = {
-        "total_plots":    total_plots,
-        "total_traits":   total_traits,
-        "total_granules": total_granules,
-        "truncated":      truncated,
-        "traits":         page_traits,
-        "granules":       page_granules,
+        "total_plots":       total_plots,
+        "total_traits":      total_traits,
+        "total_granules":    total_granules,
+        "total_pixel_count": total_pixel_count,
+        "total_csv_rows":    total_csv_rows,
+        "truncated":         truncated,
+        "traits":            page_traits,
+        "granules":          page_granules,
     }
     response.update(plots_payload)
     return response

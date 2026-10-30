@@ -157,40 +157,12 @@ export function useLinkedQuery() {
       setDisplayedOffset(payload.offset ?? 0);
       lastPayloadRef.current = payload;
 
-      // Background fetch — get all granules to compute total pixel count and
-      // cache for getPixelRanges so it doesn't need to fetch again.
-      const basePayload = { ...payload };
-      delete basePayload.offset;
-      delete basePayload.limit;
-      fetchLinkedQueryAll({ ...basePayload, format: 'json' })
-        .then(allData => {
-          const allG = allData.granules ?? [];
-          const allT = allData.traits   ?? [];
-          allGranulesCache.current = allG;
-          allTraitsCache.current   = allT;
-
-          // Total pixel count
-          const total = allG.reduce((sum, g) => sum + (Array.isArray(g.pixel_ids) ? g.pixel_ids.length : 0), 0);
-          setTotalPixelCount(total);
-          setPixelCountLoading(false);
-
-          // Total CSV rows — one row per trait × overlapping granules (min 1)
-          const plotGranules = {};
-          for (const g of allG) {
-            for (const pid of (g.plot_ids ?? [])) {
-              if (!plotGranules[pid]) plotGranules[pid] = [];
-              plotGranules[pid].push(g);
-            }
-          }
-          const csvRows = allT.reduce((sum, t) => {
-            const overlapping = plotGranules[t.plot_id] ?? [];
-            return sum + Math.max(1, overlapping.length);
-          }, 0);
-          setTotalCsvRows(csvRows);
-        })
-        .catch(() => {
-          setPixelCountLoading(false);
-        });
+      // total_pixel_count / total_csv_rows now come straight from the backend
+      // as cheap SQL aggregates (see orchestration.py) — no need to fetch every
+      // matching plot's full granule/trait rows just to sum them client-side.
+      setTotalPixelCount(data.total_pixel_count ?? 0);
+      setTotalCsvRows(data.total_csv_rows ?? 0);
+      setPixelCountLoading(false);
     } catch (err) {
       console.error('[useLinkedQuery] error:', err);
       setError(err.response?.data?.error ?? err.message ?? 'Query failed');
